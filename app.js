@@ -1,22 +1,26 @@
-/* Flota Corporativa · TRANSDA — app web v1.0 (Supervisor y Consulta) */
+/* Flota Corporativa · TRANSDA — app web v2.2 (Supervisor y Consulta) */
 "use strict";
-const APP_VERSION = "2.0";
+const APP_VERSION = "2.2";
 const API = (window.FC_CONFIG && window.FC_CONFIG.API_URL) || "";
 
-/* ---------------- checklist (CHECKLIST_2, 34 ítems; prioridad del hallazgo que genera un "Malo") ---------------- */
+/* ---------------- checklist (CHECK_LIST_ACTUALIZADO nov-2026, 31 ítems; prioridad del hallazgo que genera un "Malo") ---------------- */
 const SECTIONS = [
  {id:"ext", t:"1. Condición exterior", items:[["Carrocería, pintura, golpes y rayones","Baja"],["Parabrisas y ventanas","Alta"],["Espejos laterales y retrovisor","Media"],
   ["Luces delanteras y traseras","Alta"],["Direccionales y luces de emergencia","Alta"],["Llantas (estado y desgaste)","Alta"],["Aros y tapones (si aplica)","Baja"],
-  ["Placas y emblemas","Media"],["Limpiaparabrisas","Media"]]},
+  ["Placas y emblemas","Media"]]},
  {id:"int", t:"2. Condición interior", items:[["Asientos, tapicería y cinturones","Media"],["Tablero e indicadores","Media"],["Aire acondicionado","Baja"],
-  ["Radio y sistema de audio","Baja"],["Manecillas","Media"],["Claxon","Alta"],["Limpieza interior","Baja"]]},
+  ["Radio y sistema de audio","Baja"],["Manecillas","Media"],["Claxon","Alta"]]},
  {id:"mec", t:"3. Condición mecánica y seguridad", items:[["Motor: funcionamiento y ruidos","Alta"],["Sin fugas visibles de aceite o fluidos","Alta"],
   ["Nivel de aceite de motor","Media"],["Nivel de refrigerante","Media"],["Nivel de líquido de frenos","Alta"],["Frenos y freno de estacionamiento","Alta"],
-  ["Dirección y suspensión (revisión básica)","Alta"],["Batería","Media"],["Prueba de manejo sin anomalías","Alta"]]},
+  ["Dirección y suspensión (revisión básica)","Alta"],["Batería","Media"]]},
  {id:"doc", t:"4. Documentos y accesorios", items:[["Tarjeta de circulación","Alta"],["Documentos / calcomanía vigentes (si aplica)","Media"],["Llave principal","Alta"],
   ["Llave de repuesto (si aplica)","Baja"],["Llanta de repuesto","Media"],["Tricket y llave de chuchos","Media"],["Triángulos o conos de seguridad","Media"],
   ["Extintor (si aplica)","Media"],["Otros accesorios asignados","Baja"]]}
 ];
+const SIN_FOTO = new Set(["doc-7","doc-8"]);   // triángulos y extintor: un "Malo" significa que no tiene, no se pide foto
+const MAX_FOTOS_FALLA = {"ext-1":2};           // carrocería: hasta 2 fotos de daños
+const MARCABLE = new Set(["frente","atras","izq","der"]);
+const CON_CARTA = t=>t==="E"||t==="A";          // entrega (y alta) llevan carta de responsabilidad
 SECTIONS.forEach(s=>s.items=s.items.map((x,i)=>({k:s.id+"-"+(i+1),n:i+1,t:x[0],p:x[1],sec:s.t})));
 const ALL = SECTIONS.flatMap(s=>s.items);
 const TIPOS = {
@@ -25,7 +29,7 @@ const TIPOS = {
   M:{t:"Inspección mensual",d:"Revisión en sitio",a:"INSPECCIONA (supervisor)",b:"RESPONSABLE del vehículo"},
   A:{t:"Alta de vehículo",d:"Ingreso de vehículo nuevo",a:"ENTREGA (supervisor)",b:"RECIBE (responsable)"}
 };
-const FOTOS = [["frente","Frente"],["atras","Atrás"],["izq","Lado izquierdo"],["der","Lado derecho"],["odo","Odómetro"],["tab","Tablero encendido"]];
+const FOTOS = [["frente","Frente"],["atras","Atrás"],["izq","Lado izquierdo"],["der","Lado derecho"],["odo","Odómetro y tablero encendido"],["tap","Tapicería"]];
 const FUEL = ["E","1/4","1/2","3/4","F"];
 const STEP_NAMES = ["Vehículo","Datos","Checklist","Fotos y firmas","Resumen"];
 
@@ -93,8 +97,18 @@ if(S.sess && S.sess.exp < Date.now()){ S.sess=null; ls.del("fc_sess"); }
 
 function newFlow(tipo="M"){
   return { step:0, tipo, q:"", v:null, clientId:uuid(),
-    h:{fecha:localISO(), km:"", cond:"", lic:"", licvig:"", area:"", fuel:""},
-    r:{}, obs:{}, fotos:{}, fotosMalo:{}, fotoLic:null, verif:{}, verifC:{}, gen:"", dec:"C", sig:{a:null,b:null}, nomA:"", nomB:"", tried:false };
+    h:{fecha:localISO(), km:"", cond:"", lic:"", licvig:"", area:"", fuel:"", asig:"", del:"", al:"", emp:"", dpi:"", color:""},
+    r:{}, obs:{}, fotos:{}, fotosBase:{}, marks:{}, fotosMalo:{}, fotoLic:null, verif:{}, verifC:{}, gen:"", dec:"C", sig:{a:null,b:null,c:null}, nomA:"", nomB:"", tried:false };
+}
+/* borradores guardados con versiones anteriores */
+function fixFlow(f){
+  if(!f) return f; const n=newFlow(f.tipo);
+  f.h=Object.assign({},n.h,f.h||{}); f.sig=Object.assign({a:null,b:null,c:null},f.sig||{});
+  ["fotosBase","marks","fotosMalo","fotos","r","obs"].forEach(k=>{ if(!f[k]) f[k]={}; });
+  const keys=new Set(ALL.map(i=>i.k)); Object.keys(f.r).forEach(k=>{ if(!keys.has(k)) delete f.r[k]; });
+  Object.keys(f.fotosMalo).forEach(k=>{ const v=f.fotosMalo[k]; f.fotosMalo[k]=(Array.isArray(v)?v:[v]).filter(Boolean).map(x=>typeof x==="string"?{u:x,b:x,m:[]}:x); });
+  if(f.fotos.tab && !f.fotos.odo) f.fotos.odo=f.fotos.tab; delete f.fotos.tab;
+  return f;
 }
 
 /* ---------------- render ---------------- */
@@ -123,7 +137,7 @@ function banner(){
   return parts.join("");
 }
 function bindBanner(){ const b=$("#sync"); if(b) b.onclick=()=>procesarCola(true); }
-function homeBar(){ return `<button class="btn sec" id="reload" type="button">Actualizar datos</button><span class="progress" style="flex:1">v${APP_VERSION}</span><button class="btn sec" id="out" type="button">Salir</button>`; }
+function homeBar(){ return `<button class="btn sec" id="reload" type="button">Actualizar datos</button><span class="progress" style="flex:1">v${APP_VERSION}${S.cat&&S.cat.version&&S.cat.version!==APP_VERSION?` <span class="warn-txt">· servidor v${esc(S.cat.version)}: actualiza el Code.gs</span>`:""}</span><button class="btn sec" id="out" type="button">Salir</button>`; }
 function bindHomeBar(){ $("#reload").onclick=()=>cargarCatalogo(true); $("#out").onclick=()=>logout(false); }
 
 /* ---------------- ingreso ---------------- */
@@ -219,7 +233,7 @@ function bindHome(){
   const dg=$("#dgo"); if(dg) dg.onclick=()=>{ S.f=S.draft; S.draft=null; S.view="flow"; render(); };
   const dd=$("#ddel"); if(dd) dd.onclick=()=>{ S.draft=null; kv.del("borrador"); render(); };
 }
-async function revisarBorrador(){ const d=await kv.get("borrador"); if(d && d.step>0 && d.v) S.draft=d; render(); }
+async function revisarBorrador(){ const d=await kv.get("borrador"); if(d && d.step>0 && d.v) S.draft=fixFlow(d); render(); }
 let _draftT=null;
 function saveDraftSoon(){ clearTimeout(_draftT); _draftT=setTimeout(()=>{ if(S.f && S.view==="flow" && S.f.v) kv.set("borrador",S.f); },600); }
 
@@ -247,6 +261,8 @@ function pick(p){
   const r=findResp(f.h.cond); if(r){ f.h.lic=r.lic||""; f.h.licvig=r.lv||""; }
   f.nomA = f.tipo==="D" ? v.re : S.sess.nombre; f.nomB = f.tipo==="D" ? S.sess.nombre : (f.tipo==="M"? v.re : "");
   f.verif={}; f.verifC={};
+  if(CON_CARTA(f.tipo)){ f.h.emp=v.ep||""; f.h.color=v.co||""; f.h.del=f.h.fecha; f.h.asig=""; f.h.al="";
+    f.h.dpi=(r&&r.dpi)||(/^\d{13}$/.test(f.h.lic)?f.h.lic:""); }
   go(1);
 }
 function findResp(n){ if(!n||!S.cat||!S.cat.resp) return null; const k=norm(n); return S.cat.resp.find(r=>norm(r.n)===k)||null; }
@@ -268,7 +284,7 @@ function s1(){
    <div class="card stack"><h3>${f.tipo==="E"?"Responsable que recibe":"Conductor responsable"}</h3>
      <label class="f" for="cond"><span>Nombre <b>*</b></span><input id="cond" type="text" list="dlresp" value="${esc(h.cond)}" placeholder="Nombre completo"></label>
      <datalist id="dlresp">${(S.cat.resp||[]).map(r=>`<option value="${esc(r.n)}">`).join("")}</datalist>
-     ${need("cond")?`<div class="err">Escribe el nombre del conductor.</div>`:""}
+     ${need("cond")?`<div class="err">Escribe el nombre del conductor.</div>`:(f.tried&&h.cond.trim()&&!nombreOk(h.cond))?`<div class="err">Escribe el nombre y apellido del conductor, no el número de DPI o licencia.</div>`:""}
      <div class="grid2"><label class="f" for="lic"><span>No. de licencia <b>*</b></span><input id="lic" type="text" value="${esc(h.lic)}" placeholder="CUI / No. licencia"></label>
        <label class="f" for="licvig"><span>Vigencia de licencia <b>*</b></span><input id="licvig" type="date" value="${h.licvig}"></label></div>
      <div class="row" style="align-items:flex-start;gap:12px"><label class="ph req" style="width:150px;flex:none">${f.fotoLic?`<img src="${f.fotoLic}" alt="Licencia">`:""}
@@ -276,7 +292,30 @@ function s1(){
        <p class="small muted" style="flex:1;min-width:160px;margin:0">Compara la foto con el número y la fecha de vencimiento escritos. La foto va a una carpeta de acceso restringido.</p></div>
      ${need("lic")||need("licvig")?`<div class="err">Completa número y vigencia de la licencia.</div>`:""}${f.tried&&!f.fotoLic?`<div class="err">Falta la foto de la licencia.</div>`:""}
      ${licE?`<div class="err">${licE}</div>`:""}
-     <label class="f" for="area"><span>Área / sede</span><input id="area" type="text" value="${esc(h.area)}" placeholder="Ej. Auditoría Operativa"></label></div></div>`;
+     <label class="f" for="area"><span>Área / sede</span><input id="area" type="text" value="${esc(h.area)}" placeholder="Ej. Auditoría Operativa"></label></div>
+   ${CON_CARTA(f.tipo)?vAsignacion():""}</div>`;
+}
+const dpiLimpio = s=>String(s||"").replace(/[\s-]/g,"");
+const dpiOk = s=>/^\d{13}$/.test(dpiLimpio(s));
+function asigOk(){ const h=S.f.h; return h.asig==="Permanente" || (h.asig==="Temporal" && h.del && h.al && h.al>=h.del); }
+function cartaDatosOk(){ const h=S.f.h; return asigOk() && h.emp && h.color.trim() && dpiOk(h.dpi); }
+function vAsignacion(){
+  const f=S.f, h=f.h, emps=((S.cat&&S.cat.empresas)||[]).map(x=>x.e); if(h.emp&&!emps.includes(h.emp)) emps.unshift(h.emp);
+  return `<div class="card stack"><h3>Asignación y carta de responsabilidad</h3>
+     <div class="stack" style="gap:6px"><span class="small muted">Tipo de asignación <b class="err">*</b></span>
+       <div class="seg" style="grid-template-columns:1fr 1fr" role="group" aria-label="Tipo de asignación">
+         <button type="button" data-asig="Permanente" aria-pressed="${h.asig==="Permanente"}"><b>Permanente</b><span>Sin fecha de fin</span></button>
+         <button type="button" data-asig="Temporal" aria-pressed="${h.asig==="Temporal"}"><b>Temporal</b><span>Con vigencia del / al</span></button></div>
+       ${f.tried&&!h.asig?`<div class="err">Elige si la asignación es permanente o temporal.</div>`:""}</div>
+     ${h.asig==="Temporal"?`<div class="grid2"><label class="f" for="del"><span>Del <b>*</b></span><input id="del" type="date" value="${h.del}"></label>
+       <label class="f" for="al"><span>Al <b>*</b></span><input id="al" type="date" value="${h.al}" min="${h.del}"></label></div>
+       ${f.tried&&!asigOk()?`<div class="err">Indica la vigencia; la fecha final no puede ser antes de la inicial.</div>`:""}`:""}
+     <div class="grid2"><label class="f" for="emp"><span>Empresa propietaria <b>*</b></span><select id="emp"><option value="">Elegir…</option>${emps.map(e=>`<option ${e===h.emp?"selected":""}>${esc(e)}</option>`).join("")}</select></label>
+       <label class="f" for="color"><span>Color del vehículo <b>*</b></span><input id="color" type="text" value="${esc(h.color)}" placeholder="Ej. Blanco"></label></div>
+     ${f.tried&&(!h.emp||!h.color.trim())?`<div class="err">Indica la empresa propietaria y el color del vehículo.</div>`:""}
+     <label class="f" for="dpi"><span>DPI (CUI) de quien recibe <b>*</b></span><input id="dpi" type="text" inputmode="numeric" maxlength="16" value="${esc(h.dpi)}" placeholder="13 dígitos"></label>
+     ${f.tried&&!dpiOk(h.dpi)?`<div class="err">El DPI debe tener 13 dígitos.</div>`:""}
+     <p class="small muted" style="margin:0">Con estos datos se llena la carta de responsabilidad. El piloto la lee y la firma en el paso de firmas.</p></div>`;
 }
 function kmError(){
   const v=S.f.v, km=Number(S.f.h.km);
@@ -288,12 +327,18 @@ function kmError(){
 function licError(){ const h=S.f.h; return h.licvig && h.licvig<h.fecha ? "La licencia está vencida. Se registra como hallazgo de prioridad alta; tú decides si entregas." : null; }
 function b1(){
   $("#flic").onchange=e=>readImg(e.target.files[0],url=>{S.f.fotoLic=url; render();});
-  ["fecha","km","cond","lic","licvig","area"].forEach(id=>{ const el=$("#"+id);
-    el.onchange=()=>{ S.f.h[id]=el.value; if(id==="cond"){ const r=findResp(el.value); if(r){ if(!S.f.h.lic) S.f.h.lic=r.lic||""; if(!S.f.h.licvig) S.f.h.licvig=r.lv||""; } if(S.f.tipo!=="D") S.f.nomB=el.value; else S.f.nomA=el.value; } render(); };
-    if(el.type!=="date") el.oninput=()=>{ S.f.h[id]=el.value; }; });
+  ["fecha","km","cond","lic","licvig","area","del","al","emp","color","dpi"].forEach(id=>{ const el=$("#"+id); if(!el) return;
+    el.onchange=()=>{ const h=S.f.h; h[id]=el.value;
+      if(id==="cond"){ const r=findResp(el.value); if(r){ if(!h.lic) h.lic=r.lic||""; if(!h.licvig) h.licvig=r.lv||""; if(!h.dpi&&r.dpi) h.dpi=r.dpi; } if(S.f.tipo!=="D") S.f.nomB=el.value; else S.f.nomA=el.value; }
+      if((id==="lic"||id==="cond") && CON_CARTA(S.f.tipo) && !h.dpi && dpiOk(h.lic)) h.dpi=dpiLimpio(h.lic);
+      if(id==="fecha" && h.asig!=="Temporal") h.del=h.fecha;
+      keepY(render); };
+    if(el.type!=="date"&&el.tagName!=="SELECT") el.oninput=()=>{ S.f.h[id]=el.value; }; });
   $$("[data-fuel]").forEach(b=>b.onclick=()=>{S.f.h.fuel=b.dataset.fuel; render();});
+  $$("[data-asig]").forEach(b=>b.onclick=()=>{ S.f.h.asig=b.dataset.asig; if(!S.f.h.del) S.f.h.del=S.f.h.fecha; keepY(render); });
 }
-function ok1(){ const h=S.f.h, k=kmError(); return h.fecha&&h.km!==""&&h.fuel&&h.cond.trim()&&h.lic.trim()&&h.licvig&&S.f.fotoLic&&!(k&&k.block); }
+function nombreOk(n){ return /[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{2,}/.test(String(n||"")) && !/\d{5,}/.test(String(n||"")); }
+function ok1(){ const h=S.f.h, k=kmError(); return h.fecha&&h.km!==""&&h.fuel&&h.cond.trim()&&nombreOk(h.cond)&&h.lic.trim()&&h.licvig&&S.f.fotoLic&&!(k&&k.block)&&(!CON_CARTA(S.f.tipo)||cartaDatosOk()); }
 
 /* ---------------- paso 2: checklist + hallazgos abiertos ---------------- */
 function abiertos(){ return (S.cat.hall||[]).filter(x=>x.p===S.f.v.p); }
@@ -314,10 +359,16 @@ function s2(){
      ${s.items.map(it=>{ const v=f.r[it.k], need=v==="M"&&!(f.obs[it.k]||"").trim();
        return `<div class="item ${need&&f.tried?"need":""}"><div class="item-h"><span class="n">${it.n}</span><span class="t">${esc(it.t)}</span><span class="prio ${it.p} small">${it.p}</span></div>
         <div class="tri" role="group" aria-label="${esc(it.t)}">${[["B","Bueno"],["M","Malo"],["N","N/A"]].map(([c,l])=>`<button type="button" data-k="${it.k}" data-v="${c}" aria-pressed="${v===c}">${l}</button>`).join("")}</div>
-        ${v==="M"?`<div class="obs stack" style="gap:6px"><label class="f" for="o-${it.k}"><span>Qué está mal <b>*</b></span><textarea id="o-${it.k}" data-o="${it.k}" placeholder="Ej. rajadura de 20 cm lado copiloto">${esc(f.obs[it.k]||"")}</textarea></label>
+        ${v==="M"?`<div class="obs stack" style="gap:6px"><label class="f" for="o-${it.k}"><span>Qué está mal <b>*</b></span><textarea id="o-${it.k}" data-o="${it.k}" placeholder="${SIN_FOTO.has(it.k)?"Ej. no tiene":"Ej. rajadura de 20 cm lado copiloto"}">${esc(f.obs[it.k]||"")}</textarea></label>
            ${need&&f.tried?`<span class="hint">Describe la falla para generar el hallazgo.</span>`:""}
-           <label class="ph" style="aspect-ratio:auto;padding:10px;justify-content:flex-start;max-width:260px"><input type="file" accept="image/*" capture="environment" data-fm="${it.k}" aria-label="Foto de la falla">
-             <span class="lbl">${f.fotosMalo[it.k]?"Foto agregada ✓ (cambiar)":"Agregar foto de la falla"}</span></label></div>`:""}</div>`}).join("")}</section>`).join("")}</div>`;
+           ${SIN_FOTO.has(it.k)?`<div class="row"><button type="button" class="btn sec sm" data-notiene="${it.k}">No tiene</button><span class="small muted">No requiere foto.</span></div>`:fotosFalla(it.k)}</div>`:""}</div>`}).join("")}</section>`).join("")}</div>`;
+}
+function fotosFalla(k){
+  const arr=S.f.fotosMalo[k]||[], max=MAX_FOTOS_FALLA[k]||1, marc=MAX_FOTOS_FALLA[k]>1;
+  return `<div class="row" style="gap:10px;align-items:flex-start">${arr.map((x,i)=>`<div class="thumb"><img src="${x.u}" alt="Foto ${i+1} de la falla">
+      <div class="row" style="gap:10px">${marc?`<button type="button" class="link" data-mkm="${k}" data-i="${i}">✎ Marcar${(x.m||[]).length?" ("+x.m.length+")":""}</button>`:""}<button type="button" class="link" data-rmm="${k}" data-i="${i}">Quitar</button></div></div>`).join("")}
+    ${arr.length<max?`<label class="ph" style="aspect-ratio:auto;padding:10px;justify-content:flex-start;max-width:230px"><input type="file" accept="image/*" capture="environment" data-fm="${k}" aria-label="Foto de la falla">
+      <span class="lbl">${arr.length?"Agregar otra foto":"Agregar foto de la falla"}${max>1?` (hasta ${max})`:""}</span></label>`:""}</div>`;
 }
 function keepY(fn){ const y=window.scrollY; fn(); window.scrollTo({top:y}); }
 function b2(){
@@ -325,7 +376,11 @@ function b2(){
   $$("[data-hv]").forEach(b=>b.onclick=()=>{ S.f.verif[b.dataset.hid]=b.dataset.hv; keepY(render); });
   $$("[data-hvc]").forEach(i=>i.oninput=()=>{ S.f.verifC[i.dataset.hvc]=i.value; });
   $$("[data-o]").forEach(t=>t.oninput=()=>{ S.f.obs[t.dataset.o]=t.value; });
-  $$("[data-fm]").forEach(inp=>inp.onchange=()=>readImg(inp.files[0],url=>{ S.f.fotosMalo[inp.dataset.fm]=url; keepY(render); }));
+  $$("[data-fm]").forEach(inp=>inp.onchange=()=>readImg(inp.files[0],url=>{ const k=inp.dataset.fm; (S.f.fotosMalo[k]=S.f.fotosMalo[k]||[]).push({u:url,b:url,m:[]}); keepY(render); }));
+  $$("[data-rmm]").forEach(b=>b.onclick=()=>{ S.f.fotosMalo[b.dataset.rmm].splice(Number(b.dataset.i),1); keepY(render); });
+  $$("[data-mkm]").forEach(b=>b.onclick=()=>{ const x=S.f.fotosMalo[b.dataset.mkm][Number(b.dataset.i)];
+    abrirMarcador(x.b||x.u, x.m||[], (url,m)=>{ x.u=url; x.m=m; keepY(render); saveDraftSoon(); }); });
+  $$("[data-notiene]").forEach(b=>b.onclick=()=>{ const k=b.dataset.notiene; S.f.obs[k]=(S.f.obs[k]||"").trim()||"No tiene"; keepY(render); });
   $("#allok").onclick=()=>{ ALL.forEach(i=>{ if(!S.f.r[i.k]) S.f.r[i.k]="B"; }); keepY(render); };
 }
 function ok2(){ const f=S.f; return ALL.every(i=>f.r[i.k]) && ALL.every(i=>f.r[i.k]!=="M"||(f.obs[i.k]||"").trim()) && abiertos().every(x=>f.verif[x.id]); }
@@ -334,24 +389,31 @@ function ok2(){ const f=S.f; return ALL.every(i=>f.r[i.k]) && ALL.every(i=>f.r[i
 function s3(){
   const f=S.f, t=TIPOS[f.tipo];
   return `<div class="stack screen"><div><div class="eyebrow">Paso 4 de 5</div><h1>Fotos y firmas</h1></div>
-   <div class="card stack"><h2>Fotos del vehículo</h2><p class="muted small">Obligatorias: los 4 lados y el odómetro. La del odómetro respalda el km registrado.</p>
-     <div class="photos">${FOTOS.map(([k,l])=>`<label class="ph ${k!=="tab"?"req":""}">${f.fotos[k]?`<img src="${f.fotos[k]}" alt="${l}">`:""}
-       <input type="file" accept="image/*" capture="environment" data-f="${k}" aria-label="Foto ${l}"><span class="lbl">${l}${k!=="tab"?" *":""}${f.fotos[k]?" ✓":""}</span></label>`).join("")}</div>
-     ${f.tried&&!fotosOk()?`<div class="err">Faltan fotos obligatorias.</div>`:""}</div>
+   <div class="card stack"><h2>Fotos del vehículo</h2><p class="muted small">Todas son obligatorias. En el frente, atrás y los dos lados toca <b>Marcar daños</b> para encerrar golpes o rayones. La del odómetro con el tablero encendido respalda el km.</p>
+     <div class="photos">${FOTOS.map(([k,l])=>`<div class="phw"><label class="ph req">${f.fotos[k]?`<img src="${f.fotos[k]}" alt="${l}">`:""}
+       <input type="file" accept="image/*" capture="environment" data-f="${k}" aria-label="Foto ${l}"><span class="lbl">${l} *${f.fotos[k]?" ✓":""}</span></label>
+       ${MARCABLE.has(k)&&f.fotos[k]?`<button type="button" class="btn sec sm" data-mk="${k}">✎ Marcar daños${(f.marks[k]||[]).length?` (${f.marks[k].length})`:""}</button>`:""}</div>`).join("")}</div>
+     ${f.tried&&!fotosOk()?`<div class="err">Faltan fotos: ${FOTOS.filter(([k])=>!f.fotos[k]).map(x=>x[1]).join(", ")}.</div>`:""}</div>
    <div class="card stack"><h2>Daños existentes y observaciones generales</h2><textarea id="gen" placeholder="Pendientes, daños previos, acuerdos con el responsable">${esc(f.gen)}</textarea></div>
-   <div class="card stack"><h2>Confirmación</h2>${sigBlock("a",t.a,"nomA")}${sigBlock("b",t.b,"nomB")}${f.tried&&!sigOk()?`<div class="err">Faltan nombre o firma.</div>`:""}</div></div>`;
+   <div class="card stack"><h2>Confirmación</h2>${sigBlock("a",t.a,"nomA")}${sigBlock("b",t.b,"nomB")}${f.tried&&!(f.sig.a&&f.sig.b&&f.nomA.trim()&&f.nomB.trim())?`<div class="err">Faltan nombre o firma.</div>`:""}</div>
+   ${CON_CARTA(f.tipo)?`<div class="card stack"><h2>Carta de responsabilidad</h2>
+     <p class="small muted" style="margin:0">Pide a ${esc(f.h.cond||"quien recibe")} que la lea. Al firmar acepta las condiciones. Se genera un PDF aparte que se comparte por WhatsApp y se envía por correo junto con el acta.</p>
+     <div class="carta">${cartaHTML(cartaDesdeFlujo())}</div>
+     ${sigBlock("c","FIRMA DEL PILOTO EN LA CARTA",null)}${f.tried&&!f.sig.c?`<div class="err">Falta la firma del piloto en la carta.</div>`:""}</div>`:""}</div>`;
 }
 function sigBlock(k,label,nk){
   return `<div class="stack" style="gap:6px"><span class="eyebrow" style="color:var(--muted)">${label}</span>
-    <label class="f" for="${nk}"><span>Nombre <b>*</b></span><input id="${nk}" type="text" value="${esc(S.f[nk])}"></label>
+    ${nk?`<label class="f" for="${nk}"><span>Nombre <b>*</b></span><input id="${nk}" type="text" value="${esc(S.f[nk])}"></label>`:`<b>${esc(S.f.h.cond)}</b>`}
     <canvas class="sig" id="sig-${k}" aria-label="Firma ${label}"></canvas>
     <div class="row" style="justify-content:space-between"><span class="small muted">Firma con el dedo dentro del recuadro.</span><button type="button" class="link" data-clear="${k}">Borrar firma</button></div></div>`;
 }
 function b3(){
-  $$("[data-f]").forEach(inp=>inp.onchange=()=>readImg(inp.files[0],url=>{ S.f.fotos[inp.dataset.f]=url; keepY(render); }));
+  $$("[data-f]").forEach(inp=>inp.onchange=()=>readImg(inp.files[0],url=>{ const k=inp.dataset.f; S.f.fotos[k]=url; S.f.fotosBase[k]=url; S.f.marks[k]=[]; keepY(render); }));
+  $$("[data-mk]").forEach(b=>b.onclick=()=>{ const k=b.dataset.mk, f=S.f;
+    abrirMarcador(f.fotosBase[k]||f.fotos[k], f.marks[k]||[], (url,m)=>{ if(!f.fotosBase[k]) f.fotosBase[k]=f.fotos[k]; f.fotos[k]=m.length?url:f.fotosBase[k]; f.marks[k]=m; keepY(render); saveDraftSoon(); }); });
   $("#gen").oninput=e=>S.f.gen=e.target.value;
   ["nomA","nomB"].forEach(id=>{ $("#"+id).oninput=e=>{ S.f[id]=e.target.value; }; });
-  ["a","b"].forEach(initSig);
+  ["a","b"].concat(CON_CARTA(S.f.tipo)?["c"]:[]).forEach(initSig);
   $$("[data-clear]").forEach(b=>b.onclick=()=>{ S.f.sig[b.dataset.clear]=null; keepY(render); });
 }
 function initSig(k){
@@ -367,8 +429,8 @@ function initSig(k){
   const end=()=>{ if(!drawing) return; drawing=false; if(moved) S.f.sig[k]=c.toDataURL("image/png"); saveDraftSoon(); };
   c.onpointerup=end; c.onpointercancel=end;
 }
-function fotosOk(){ return FOTOS.filter(f=>f[0]!=="tab").every(([k])=>S.f.fotos[k]); }
-function sigOk(){ const f=S.f; return f.sig.a&&f.sig.b&&f.nomA.trim()&&f.nomB.trim(); }
+function fotosOk(){ return FOTOS.every(([k])=>S.f.fotos[k]); }
+function sigOk(){ const f=S.f; return f.sig.a&&f.sig.b&&f.nomA.trim()&&f.nomB.trim()&&(!CON_CARTA(f.tipo)||f.sig.c); }
 function ok3(){ return fotosOk()&&sigOk(); }
 
 /* ---------------- paso 4: resumen ---------------- */
@@ -393,11 +455,12 @@ function s4(){
      <dt>Fecha</dt><dd>${h.fecha}</dd><dt>Empresa</dt><dd>${esc(v.e)}</dd>
      <dt>Kilometraje</dt><dd>${fmt(h.km)} km${v.km!=null?` <span class="muted small">(+${fmt(h.km-v.km)})</span>`:""}</dd><dt>Combustible</dt><dd>${h.fuel}</dd>
      <dt>Conductor</dt><dd>${esc(h.cond)}</dd><dt>Licencia</dt><dd>${esc(h.lic)} · vence ${h.licvig}</dd><dt>Área / sede</dt><dd>${esc(h.area||"—")}</dd>
+     ${CON_CARTA(f.tipo)?`<dt>Asignación</dt><dd>${esc(asigTxt(h))}</dd><dt>Carta</dt><dd>Firmada por ${esc(h.cond)} · DPI ${esc(dpiFmt(h.dpi))}</dd>`:""}
      <dt>Checklist</dt><dd>${cnt("B")} Bueno · ${cnt("M")} Malo · ${cnt("N")} N/A</dd>
      ${ab.length?`<dt>Hallazgos previos</dt><dd>${ab.filter(x=>f.verif[x.id]==="R").length} resueltos · ${ab.filter(x=>f.verif[x.id]==="S").length} siguen</dd>`:""}</dl></div>
    <div class="card stack"><h2>Hallazgos nuevos (${hall.length})</h2>${hall.length?`<div style="overflow-x:auto"><table class="h"><thead><tr><th>Prioridad</th><th>Ítem</th><th>Observación</th></tr></thead><tbody>
      ${hall.map(x=>`<tr><td class="prio ${x.p}">${x.p}</td><td>${esc(x.item)}<br><span class="muted small">${esc(x.sec)}</span></td><td>${esc(x.obs)}</td></tr>`).join("")}</tbody></table></div>`:`<p class="muted">Sin hallazgos nuevos.</p>`}</div>
-   <p class="note">Al registrar se guarda en la hoja, se genera el PDF del acta y queda listo para compartir por WhatsApp. Sin señal, queda guardado en este dispositivo y se envía después.</p></div>`;
+   <p class="note">Al registrar se guarda en la hoja, se genera el PDF del acta${CON_CARTA(f.tipo)?" y el de la carta de responsabilidad":""} y queda listo para compartir por WhatsApp; también se envía por correo. Sin señal, queda guardado en este dispositivo y se envía después.</p></div>`;
 }
 function b4(){ $$("[data-dec]").forEach(b=>b.onclick=()=>{ S.f.dec=b.dataset.dec; keepY(render); }); }
 
@@ -420,8 +483,10 @@ function payload(f){
   return { clientId:f.clientId, tipo:f.tipo, fecha:f.h.fecha, placa:f.v.p, km:Number(f.h.km), fuel:f.h.fuel, cond:f.h.cond.trim(), lic:f.h.lic.trim(), licvig:f.h.licvig,
     area:f.h.area.trim(), items:ALL.map(i=>({k:i.k,sec:i.sec,n:i.n,t:i.t,p:i.p,r:f.r[i.k],obs:f.r[i.k]==="M"?(f.obs[i.k]||"").trim():""})),
     verif:Object.entries(f.verif).map(([id,e])=>({id,e,c:f.verifC[id]||""})), dec:f.dec, firmaA:f.nomA.trim(), firmaB:f.nomB.trim(), gen:f.gen.trim(),
-    fotos:f.fotos, fotosMalo:Object.fromEntries(Object.entries(f.fotosMalo).filter(([k])=>f.r[k]==="M")), fotoLic:f.fotoLic, sigA:f.sig.a, sigB:f.sig.b,
-    licVencida:!!(f.h.licvig&&f.h.licvig<f.h.fecha) };
+    fotos:Object.fromEntries(FOTOS.filter(([k])=>f.fotos[k]).map(([k])=>[k,f.fotos[k]])),
+    fotosMalo:Object.fromEntries(Object.entries(f.fotosMalo).filter(([k,a])=>f.r[k]==="M"&&!SIN_FOTO.has(k)&&a&&a.length).map(([k,a])=>[k,a.slice(0,MAX_FOTOS_FALLA[k]||1).map(x=>x.u)])),
+    fotoLic:f.fotoLic, sigA:f.sig.a, sigB:f.sig.b, licVencida:!!(f.h.licvig&&f.h.licvig<f.h.fecha), app:APP_VERSION,
+    ...(CON_CARTA(f.tipo)?{asig:f.h.asig, del:f.h.asig==="Temporal"?f.h.del:"", al:f.h.asig==="Temporal"?f.h.al:"", emp:f.h.emp, dpi:dpiLimpio(f.h.dpi), color:f.h.color.trim(), sigC:f.sig.c}:{}) };
 }
 async function registrar(){
   if(S.busy) return;
@@ -445,6 +510,8 @@ async function enviarUno(item){
   const r=await api("guardar",{data:d});
   const res={folio:r.folio, placa:d.placa, tipo:meta.tipoT, res:r.resultado||(d.dec==="T"?"ENVIADO A TALLER":"APTO"), d, meta, nuevos:r.nuevos, resueltos:r.resueltos, vigentes:r.vigentes};
   res.pdf = await pdfActa(d, meta, res);
+  if(CON_CARTA(d.tipo) && d.sigC){ res.carta = await pdfCarta(d, meta, res);
+    try{ if(!r.repetido || !r.carta) await api("subirPdf",{folio:r.folio,pdf:await blobToDataURL(res.carta),doc:"carta"}); res.subidoCarta=true; }catch(e){ res.subidoCarta=false; res.errCarta=e.message; } }
   try{ if(!r.repetido || !r.pdf) await api("subirPdf",{folio:r.folio,pdf:await blobToDataURL(res.pdf)}); res.subido=true; }catch(e){ res.subido=false; res.errPdf=e.message; }
   await cola.del(item.clientId);
   actualizarLocal(d, r.folio);
@@ -457,7 +524,7 @@ async function procesarCola(manual){
   const items=await cola.all(); let n=0, err=null;
   for(const it of items){ try{ await enviarUno(it); n++; }catch(e){ err=e; if(e.offline) break; } }
   _syncing=false; await contarCola();
-  if(n) S.msg={t:`Se enviaron ${n} registro${n>1?"s":""} pendientes. Están en "Enviados hoy" para compartir.`};
+  if(n) S.msg={t:`Se enviaron ${n} registro${n>1?"s":""} pendientes. Están en la pestaña Actas para compartir.`};
   else if(manual && err) S.msg={t:err.message,err:1};
   if(S.view!=="flow") render();
 }
@@ -483,6 +550,10 @@ function readImg(file,cb){
 }
 
 /* PDF del acta (jsPDF + autotable) */
+function achicar(src,max,q,fondo){ return new Promise(ok=>{ if(!src){ ok(src); return; } const im=new Image();
+  im.onload=()=>{ const sc=Math.min(1,max/Math.max(im.width,im.height)); const c=document.createElement("canvas"); c.width=Math.max(1,Math.round(im.width*sc)); c.height=Math.max(1,Math.round(im.height*sc));
+    const g=c.getContext("2d"); if(fondo){ g.fillStyle="#fff"; g.fillRect(0,0,c.width,c.height); } g.drawImage(im,0,0,c.width,c.height); ok(c.toDataURL("image/jpeg",q)); };
+  im.onerror=()=>ok(src); im.src=src; }); }
 async function pdfActa(d, meta, res){
   const { jsPDF } = window.jspdf; const doc=new jsPDF({unit:"mm",format:"a4"}); const W=210, M=12;
   // las fuentes estándar del PDF no traen "·": se cambia por guion
@@ -496,8 +567,9 @@ async function pdfActa(d, meta, res){
   head("ACTA DE "+meta.tipoT.toUpperCase());
   const v=meta.v;
   doc.autoTable({ startY:27, theme:"plain", styles:{fontSize:9,cellPadding:1.2}, columnStyles:{0:{fontStyle:"bold",textColor:gray,cellWidth:32},2:{fontStyle:"bold",textColor:gray,cellWidth:32}},
-    body:[["Placa",d.placa,"Empresa",v.e||""],["Vehículo",`${v.m||""} ${v.l||""} ${v.a||""}`,"Área / sede",d.area||""],["Kilometraje",fmt(d.km)+" km","Combustible",d.fuel],
-      ["Conductor",d.cond,"Licencia",`${d.lic} · vence ${d.licvig}`]] });
+    body:[["Placa",d.placa,"Empresa",d.emp||v.ep||v.e||""],["Vehículo",`${v.m||""} ${v.l||""} ${v.a||""}${d.color?" · "+d.color:""}`,"Área / sede",d.area||""],["Kilometraje",fmt(d.km)+" km","Combustible",d.fuel],
+      ["Conductor",d.cond,"Licencia",`${d.lic} · vence ${d.licvig}`]].concat(CON_CARTA(d.tipo)&&d.asig?[["Asignación",asigTxt(d),"DPI",dpiFmt(d.dpi)]]:[])
+      .concat([["Fecha de inspección",d.fecha,"Próxima inspección",addDays(d.fecha,(S.cat&&S.cat.dias)||30)]]) });
   let y=doc.lastAutoTable.finalY+3;
   const col=res.res==="APTO"?[47,125,91]:res.res==="ENVIADO A TALLER"?[180,35,24]:[154,91,0];
   doc.setFillColor(...col); doc.roundedRect(M,y,W-2*M,9,1.5,1.5,"F"); doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(11);
@@ -519,17 +591,19 @@ async function pdfActa(d, meta, res){
   // firmas
   if(y>235){ doc.addPage(); y=20; }
   const t=TIPOS[d.tipo], sw=(W-2*M-10)/2;
-  [[d.sigA,d.firmaA,t.a],[d.sigB,d.firmaB,t.b]].forEach(([img,n,l],i)=>{ const x=M+i*(sw+10);
-    try{ doc.addImage(img,"PNG",x,y,sw,28); }catch(e){}
+  const sigs=[await achicar(d.sigA,700,.75,true), await achicar(d.sigB,700,.75,true)];
+  [[sigs[0],d.firmaA,t.a],[sigs[1],d.firmaB,t.b]].forEach(([img,n,l],i)=>{ const x=M+i*(sw+10);
+    try{ doc.addImage(img,"JPEG",x,y,sw,28); }catch(e){}
     doc.setDrawColor(...gray); doc.line(x,y+30,x+sw,y+30); doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.text(n,x,y+35); doc.setFont("helvetica","normal"); doc.setTextColor(...gray); doc.text(l,x,y+40); doc.setTextColor(0,0,0); });
   // fotos
   doc.addPage(); head("FOTOS · "+d.placa);
-  const pics=FOTOS.filter(([k])=>d.fotos[k]).map(([k,l])=>[d.fotos[k],l]).concat(Object.entries(d.fotosMalo||{}).map(([k,u])=>[u,"Falla: "+(ALL.find(i=>i.k===k)||{}).t]));
+  const pics=FOTOS.filter(([k])=>d.fotos[k]).map(([k,l])=>[d.fotos[k],l]).concat(Object.entries(d.fotosMalo||{}).flatMap(([k,u])=>{ const a=Array.isArray(u)?u:[u], t=(ALL.find(i=>i.k===k)||{}).t;
+    return a.map((x,i)=>[x,"Falla: "+t+(a.length>1?` (${i+1}/${a.length})`:"")]); }));
   const pw=(W-2*M-6)/2, ph=pw*0.75; let px=M, py=28;
   for(let i=0;i<pics.length;i++){
     if(py+ph+8>287){ doc.addPage(); head("FOTOS · "+d.placa); py=28; }
     px=M+(i%2)*(pw+6);
-    try{ doc.addImage(pics[i][0],"JPEG",px,py,pw,ph,undefined,"FAST"); }catch(e){}
+    try{ doc.addImage(await achicar(pics[i][0],1000,.6),"JPEG",px,py,pw,ph,undefined,"FAST"); }catch(e){}
     doc.setFontSize(8.5); doc.setTextColor(...gray); doc.text(String(pics[i][1]).slice(0,60),px,py+ph+4); doc.setTextColor(0,0,0);
     if(i%2===1) py+=ph+9;
   }
@@ -545,23 +619,141 @@ function destinatarios(res){
   ((S.cat&&S.cat.contactos)||[]).forEach(c=>out.push({rol:c.rol,n:c.n,w:c.w}));
   return out;
 }
+function pdfUrl(res){ if(!res.url) res.url=URL.createObjectURL(res.pdf); return res.url; }
+function cartaUrl(res){ if(!res.curl) res.curl=URL.createObjectURL(res.carta); return res.curl; }
+function pdfNombre(res){ return `${res.folio} ${res.placa}.pdf`; }
+function cartaNombre(res){ return `CARTA ${res.folio} ${res.placa}.pdf`; }
 async function compartir(res){
-  const name=`${res.folio} ${res.placa}.pdf`; const file=new File([res.pdf],name,{type:"application/pdf"});
-  const text=`Acta ${res.folio} · ${res.tipo} · ${res.placa} · ${res.res}`;
-  try{ if(navigator.canShare && navigator.canShare({files:[file]})){ await navigator.share({files:[file],title:name,text}); return; } }catch(e){ if(e&&e.name==="AbortError") return; }
-  const a=document.createElement("a"); a.href=URL.createObjectURL(res.pdf); a.download=name; document.body.appendChild(a); a.click(); a.remove();
-  S.msg={t:"Este dispositivo no permite compartir archivos directo: se descargó el PDF para que lo envíes por WhatsApp."}; render();
+  const files=[new File([res.pdf],pdfNombre(res),{type:"application/pdf"})];
+  if(res.carta) files.push(new File([res.carta],cartaNombre(res),{type:"application/pdf"}));
+  let porque="";
+  if(!navigator.share || !navigator.canShare) porque="Este navegador no permite compartir archivos. Abre la app en Chrome (Android) o Safari (iPhone), no dentro de WhatsApp, Facebook u otra app.";
+  else if(!navigator.canShare({files})) porque="Este celular no permite compartir estos PDF directo.";
+  else {
+    // solo los archivos: con texto o título algunas versiones de WhatsApp no adjuntan el PDF
+    try{ await navigator.share({files}); return; }
+    catch(e){ if(e&&e.name==="AbortError") return; porque="No se pudo abrir el menú de compartir ("+(e&&e.name||"error")+")."; }
+  }
+  S.msg={t:porque+" Usa «Descargar» y luego adjúntalo en WhatsApp. El acta también se envía por correo.",err:1}; render(); window.scrollTo({top:0});
+}
+function botonesPdf(res,attr){ return `<button class="btn pri sm" ${attr} type="button">Compartir${res.carta?" acta y carta":" PDF"}</button><a class="btn sec sm" href="${pdfUrl(res)}" download="${esc(pdfNombre(res))}">Descargar acta</a>${res.carta?`<a class="btn sec sm" href="${cartaUrl(res)}" download="${esc(cartaNombre(res))}">Descargar carta</a>`:""}`; }
+
+/* ---------------- carta de responsabilidad ---------------- */
+const MESES=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+function fechaLarga(iso){ const [y,m,d]=String(iso||"").split("-").map(Number); return y?`${d} de ${MESES[m-1]} de ${y}`:""; }
+function dpiFmt(x){ const s=dpiLimpio(x); return /^\d{13}$/.test(s)?`${s.slice(0,4)} ${s.slice(4,9)} ${s.slice(9)}`:s; }
+function asigTxt(h){ return h.asig==="Temporal"?`Temporal, del ${h.del} al ${h.al}`:(h.asig||""); }
+function empresaLegal(e){ const x=((S.cat&&S.cat.empresas)||[]).find(y=>y.e===e); return (x&&x.rs)||e||"la empresa"; }
+function cartaDesdeFlujo(){ const f=S.f, v=f.v, h=f.h; return {fecha:h.fecha, nombre:h.cond.trim(), dpi:dpiFmt(h.dpi), tipoV:v.t, marca:v.m, modelo:`${v.l||""} ${v.a||""}`.trim(), color:h.color.trim(), placa:v.p, empresa:empresaLegal(h.emp), asig:asigTxt(h), folio:""}; }
+function cartaDesdeActa(d,meta,res){ const v=meta.v; return {fecha:d.fecha, nombre:d.cond, dpi:dpiFmt(d.dpi), tipoV:v.t, marca:v.m, modelo:`${v.l||""} ${v.a||""}`.trim(), color:d.color, placa:d.placa, empresa:empresaLegal(d.emp), asig:asigTxt(d), folio:res.folio}; }
+/* Texto de CARTA_DE_RESPONSABILIDAD.docx; solo se llenan los espacios en blanco */
+function cartaPartes(x){
+  const E=x.empresa||"la empresa", b=t=>t||"________";
+  return { titulo:"CARTA DE RESPONSABILIDAD DE VEHÍCULO CORPORATIVO", sub:"GUATEMALA "+String(x.fecha||"").slice(0,4), dest:"Auditoría Operativa,",
+    p1:`En la Ciudad de Guatemala, el ${b(fechaLarga(x.fecha))}, yo, ${b(x.nombre)}, guatemalteco(a), quien me identifico con Documento Personal de Identificación (DPI) con Código Único de Identificación (CUI) número: ${b(x.dpi)} extendido por el Registro Nacional de las Personas de la República de Guatemala, DECLARO QUE: asumo total responsabilidad por el vehículo que me fue asignado, cuyos datos se detallan a continuación:`,
+    tabla:[["Tipo de vehículo:",x.tipoV],["Marca:",x.marca],["Modelo:",x.modelo],["Color:",x.color],["Placa:",x.placa]].concat(x.asig?[["Tipo de asignación:",x.asig]]:[]),
+    p2:`Dicho vehículo es propiedad de ${E}, se encuentra en perfecto estado de mecánica y carrocería y a partir de la presente fecha reconozco que soy el único responsable del uso y manejo de este, así como de cumplir con todas las normas de tránsito y regulaciones vigentes. Me comprometo a mantener el vehículo en buen estado de funcionamiento, así como de realizar los mantenimientos y reparaciones necesarias de acuerdo con la política de uso de vehículos de la empresa.`,
+    p3:`Asimismo, asumo todas las obligaciones de tipo civil, administrativo y penal que pudieran presentarse por el mal uso que hiciera del vehículo dentro y fuera, de los horarios y jornadas de trabajo. En caso de ocurrir algún percance de cualquier tipo informaré de inmediato a mi jefe directo o al departamento legal y por el uso inadecuado me comprometo a pagar la prima por deducible que puede llegar a ser de Q 10,000.00 y en caso de un percance por estado de ebriedad pagaré el 100% de los costos por daños ocasionados. El Vehículo será devuelto en el momento en que cese mi contrato de trabajo con ${E} o cuando sea requerido, en perfectas condiciones de uso.`,
+    intro:"Además de lo anterior, me comprometo a:",
+    items:[
+      ["Uso Exclusivo para Fines Laborales",`El vehículo debe utilizarse únicamente para actividades relacionadas con las responsabilidades laborales asignadas por ${E}. El uso personal está estrictamente prohibido.`],
+      ["Mantenimiento y Cuidado del Vehículo","El empleado se compromete a mantener el vehículo en condiciones óptimas, realizar el mantenimiento regular según las indicaciones del fabricante y notificar cualquier problema o necesidad de reparación de inmediato al departamento correspondiente."],
+      ["Cumplimiento de las Normativas de Tráfico","Es responsabilidad del empleado cumplir con todas las leyes de tránsito y regulaciones locales mientras conduce el vehículo corporativo. Cualquier infracción o multa será responsabilidad del conductor."],
+      ["Reporte de Accidentes o Daños","En caso de accidente, robo o cualquier daño al vehículo, el empleado debe informar de inmediato a su supervisor y completar los formularios de informe de incidentes proporcionados por la empresa."],
+      ["Prohibición de Subarriendo o Préstamo",`No se permite al empleado subarrendar, prestar o ceder el vehículo a terceros sin la autorización expresa de ${E}.`],
+      ["Limpieza del Vehículo","El piloto será responsable de realizar la limpieza del vehículo asignado como mínimo una vez por semana, tanto en el interior como en el exterior, manteniéndolo en condiciones adecuadas de higiene y presentación. El incumplimiento de esta obligación podrá dar lugar a la aplicación de sanciones administrativas, conforme a las políticas y procedimientos internos de la empresa."],
+      ["Reporte de Kilometraje del Vehículo","El piloto está obligado a reportar periódicamente el kilometraje del vehículo asignado a su jefe inmediato o al Supervisor de Flota, conforme a los procedimientos y fechas establecidos por la empresa, proporcionando información veraz y actualizada."],
+      ["Devolución del Vehículo","Al término del empleo o al finalizar la asignación del vehículo, el empleado deberá devolverlo con todos los documentos y accesorios en buen estado."],
+      ["Responsabilidad Compartida por Daños al Vehículo","En caso de que el vehículo asignado sufra daños derivados de un uso inadecuado o negligente por parte del colaborador, se aplicará la siguiente política de responsabilidad compartida, la cual tendrá una vigencia de un (1) año calendario contado a partir de la fecha del primer reporte de daño registrado:"]],
+    escala:[["Primer daño reportado:","El colaborador asumirá el treinta por ciento (30%) del costo total de la reparación, y la empresa cubrirá el setenta por ciento (70%) restante."],
+      ["Segundo daño reportado:","El colaborador asumirá el cincuenta por ciento (50%) del costo total de la reparación, y la empresa cubrirá el cincuenta por ciento (50%) restante."],
+      ["Tercer daño o más dentro del período de vigencia:","El colaborador será el único responsable de cubrir el cien por ciento (100%) del costo total de la reparación, sin ninguna contribución por parte de la empresa."]],
+    nota:"Nota: El período de vigencia de un (1) año iniciará a contarse a partir de la fecha en que se registre oficialmente el primer daño reportado. El reinicio del conteo aplica únicamente para los colaboradores que, al cumplirse el año de vigencia, hayan acumulado un máximo de dos (2) daños. En caso de que el colaborador haya llegado al tercer daño dentro del año de vigencia, el conteo no se reiniciará, y cualquier daño posterior seguirá siendo responsabilidad total del colaborador al cien por ciento (100%).",
+    anexo:`El estado del vehículo al momento de la entrega consta en el acta${x.folio?" "+x.folio:" de entrega"} de esta misma fecha, que forma parte de esta carta.`,
+    cierre:"Atentamente," };
+}
+function cartaHTML(x){ const c=cartaPartes(x);
+  return `<p style="text-align:center;margin:0"><b>${esc(c.titulo)}</b><br>${esc(c.sub)}</p><p>${esc(c.dest)}</p><p>${esc(c.p1)}</p>
+    <table class="ct">${c.tabla.map(([k,v])=>`<tr><th>${esc(k)}</th><td>${esc(v||"—")}</td></tr>`).join("")}</table>
+    <p>${esc(c.p2)}</p><p>${esc(c.p3)}</p><p>${esc(c.intro)}</p>
+    <ol>${c.items.map(([t,b])=>`<li><b>${esc(t)}:</b> ${esc(b)}</li>`).join("")}</ol>
+    <ul>${c.escala.map(([t,b])=>`<li><b>${esc(t)}</b> ${esc(b)}</li>`).join("")}</ul><p class="small">${esc(c.nota)}</p><p>${esc(c.anexo)}</p><p>${esc(c.cierre)}</p>`;
+}
+async function pdfCarta(d, meta, res){
+  const { jsPDF } = window.jspdf; const doc=new jsPDF({unit:"mm",format:"letter"}); const W=216, H=279, M=22, TW=W-2*M;
+  const san=t=>typeof t==="string"?t.replace(/·/g,"-"):t; const _text=doc.text.bind(doc);
+  doc.text=(t,...a)=>_text(Array.isArray(t)?t.map(san):san(t),...a);
+  const c=cartaPartes(cartaDesdeActa(d,meta,res)); let y=24; const LH=4.6;
+  const salto=h=>{ if(y+h>H-20){ doc.addPage(); y=22; } };
+  const para=(t,{bold=false,size=10,indent=0,gap=2.6,align="justify"}={})=>{ doc.setFont("helvetica",bold?"bold":"normal"); doc.setFontSize(size);
+    const lines=doc.splitTextToSize(t,TW-indent);
+    lines.forEach((ln,i)=>{ salto(LH); const last=i===lines.length-1, w=ln.trim().split(/\s+/);
+      if(align==="justify"&&!last&&w.length>1){ const tot=w.reduce((s,x)=>s+doc.getTextWidth(x),0), sp=(TW-indent-tot)/(w.length-1); let xx=M+indent;
+        if(sp<6){ w.forEach(x=>{ doc.text(x,xx,y); xx+=doc.getTextWidth(x)+sp; }); } else doc.text(ln,M+indent,y); }
+      else doc.text(ln,M+indent,y); y+=LH; }); y+=gap; };
+  doc.setFont("helvetica","bold"); doc.setFontSize(12.5); doc.text(c.titulo,W/2,y,{align:"center"}); y+=6;
+  doc.setFontSize(10.5); doc.text(c.sub,W/2,y,{align:"center"}); y+=10;
+  para(c.dest,{bold:true}); para(c.p1);
+  doc.autoTable({ startY:y, margin:{left:M+20,right:M+20}, theme:"grid", styles:{fontSize:10,cellPadding:1.6,lineColor:[180,180,180]}, columnStyles:{0:{fontStyle:"bold",cellWidth:44}}, body:c.tabla.map(([k,v])=>[k,v||""]) });
+  y=doc.lastAutoTable.finalY+5;
+  para(c.p2); para(c.p3); para(c.intro,{bold:true});
+  c.items.forEach(([t,b],i)=>{ doc.setFont("helvetica","bold"); doc.setFontSize(10); salto(LH); doc.text(`${i+1}.`,M+2,y); para(`${t}: ${b}`,{indent:8,gap:1.6}); });
+  c.escala.forEach(([t,b])=>para(`${t} ${b}`,{indent:14,gap:1.4}));
+  y+=1; para(c.nota,{size:9}); para(c.anexo);
+  salto(52); para(c.cierre); y+=2;
+  const img=await achicar(d.sigC,700,.8,true);
+  try{ doc.addImage(img,"JPEG",M,y,70,26); }catch(e){}
+  y+=28; doc.setDrawColor(90,99,117); doc.line(M,y,M+80,y); y+=5;
+  doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.text("f) "+d.cond,M,y); y+=5; doc.setFont("helvetica","normal");
+  doc.text("DPI (CUI): "+dpiFmt(d.dpi),M,y); y+=5; doc.text("Fecha: "+fechaLarga(d.fecha),M,y);
+  const n=doc.getNumberOfPages();
+  for(let i=1;i<=n;i++){ doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(90,99,117); doc.text(`Carta de responsabilidad · ${res.folio} · ${d.placa} · página ${i} de ${n}`,M,H-10); doc.setTextColor(0,0,0); }
+  return doc.output("blob");
+}
+
+/* ---------------- marcar daños sobre una foto ---------------- */
+function abrirMarcador(base, marks, onSave){
+  const ov=document.createElement("div"); ov.className="mkov"; ov.setAttribute("role","dialog"); ov.setAttribute("aria-label","Marcar daños en la foto");
+  ov.innerHTML=`<div class="mkbar"><button type="button" class="btn sec sm" data-tool="c" aria-pressed="true">◯ Círculo</button><button type="button" class="btn sec sm" data-tool="l" aria-pressed="false">✎ Lápiz</button>
+      <button type="button" class="btn sec sm" id="mkundo">Deshacer</button><button type="button" class="btn sec sm" id="mkclr">Borrar todo</button></div>
+    <div class="mkwrap"><canvas id="mkc"></canvas></div>
+    <p class="mkhelp">Arrastra el dedo sobre el golpe o rayón para encerrarlo en un círculo, o usa el lápiz para dibujar.</p>
+    <div class="mkbar"><button type="button" class="btn sec" id="mkno">Cancelar</button><button type="button" class="btn pri" id="mkok">Guardar marcas</button></div>`;
+  document.body.appendChild(ov); const prevOv=document.body.style.overflow; document.body.style.overflow="hidden";
+  const c=ov.querySelector("#mkc"), x=c.getContext("2d"); let tool="c", list=(marks||[]).map(m=>JSON.parse(JSON.stringify(m))), cur=null, lw=6;
+  const im=new Image();
+  const dibuja=(m)=>{ [["rgba(255,255,255,.85)",lw+4],["#E0201B",lw]].forEach(([col,w])=>{ x.strokeStyle=col; x.lineWidth=w; x.lineCap="round"; x.lineJoin="round"; x.beginPath();
+      if(m.t==="c"){ const cx=(m.x0+m.x1)/2, cy=(m.y0+m.y1)/2, rx=Math.max(4,Math.abs(m.x1-m.x0)/2), ry=Math.max(4,Math.abs(m.y1-m.y0)/2); x.ellipse(cx,cy,rx,ry,0,0,Math.PI*2); }
+      else { m.p.forEach(([a,b],i)=>i?x.lineTo(a,b):x.moveTo(a,b)); }
+      x.stroke(); }); };
+  const pinta=()=>{ x.drawImage(im,0,0,c.width,c.height); list.forEach(dibuja); if(cur) dibuja(cur); };
+  const pt=e=>{ const r=c.getBoundingClientRect(); return [(e.clientX-r.left)*c.width/r.width,(e.clientY-r.top)*c.height/r.height]; };
+  im.onload=()=>{ c.width=im.naturalWidth; c.height=im.naturalHeight; lw=Math.max(4,Math.round(Math.max(c.width,c.height)/180)); pinta(); };
+  im.src=base;
+  c.onpointerdown=e=>{ e.preventDefault(); try{c.setPointerCapture(e.pointerId);}catch(_){} const [a,b]=pt(e); cur=tool==="c"?{t:"c",x0:a,y0:b,x1:a,y1:b}:{t:"l",p:[[a,b]]}; };
+  c.onpointermove=e=>{ if(!cur) return; const [a,b]=pt(e); if(cur.t==="c"){ cur.x1=a; cur.y1=b; } else cur.p.push([a,b]); pinta(); };
+  const fin=()=>{ if(!cur) return; const ok=cur.t==="c"?(Math.abs(cur.x1-cur.x0)>lw*2||Math.abs(cur.y1-cur.y0)>lw*2):cur.p.length>1; if(ok) list.push(cur); cur=null; pinta(); };
+  c.onpointerup=fin; c.onpointercancel=fin;
+  ov.querySelectorAll("[data-tool]").forEach(b=>b.onclick=()=>{ tool=b.dataset.tool; ov.querySelectorAll("[data-tool]").forEach(z=>z.setAttribute("aria-pressed",String(z===b))); });
+  ov.querySelector("#mkundo").onclick=()=>{ list.pop(); pinta(); };
+  ov.querySelector("#mkclr").onclick=()=>{ list=[]; pinta(); };
+  const cerrar=()=>{ ov.remove(); document.body.style.overflow=prevOv; };
+  ov.querySelector("#mkno").onclick=cerrar;
+  ov.querySelector("#mkok").onclick=()=>{ list.forEach(m=>{ if(m.p&&m.p.length>400) m.p=m.p.filter((_,i)=>i%2===0); }); const url=c.toDataURL("image/jpeg",.8); cerrar(); onSave(url,list); };
 }
 
 /* ---------------- pantalla final ---------------- */
 function vDone(){
   const r=S.done, lab=RES_LAB[r.res==="APTO"?"ok":r.res==="ENVIADO A TALLER"?"no":"obs"];
-  return `<div class="stack screen"><div class="status ${r.res==="APTO"?"ok":r.res==="ENVIADO A TALLER"?"no":"obs"}"><b>Registrado · ${esc(r.folio)}</b><p>${esc(r.tipo)} de ${esc(r.placa)} · ${esc(lab[0])}</p></div>
+  return `<div class="stack screen">${S.msg?`<div class="banner ${S.msg.err?"off":"q"}" role="alert">${esc(S.msg.t)}</div>`:""}<div class="status ${r.res==="APTO"?"ok":r.res==="ENVIADO A TALLER"?"no":"obs"}"><b>Registrado · ${esc(r.folio)}</b><p>${esc(r.tipo)} de ${esc(r.placa)} · ${esc(lab[0])}</p></div>
     <div class="card stack"><h2>Compartir el acta</h2>
-      <p class="small muted" style="margin:0">Toca el botón y elige WhatsApp. Envíalo a:</p>
+      <p class="small muted" style="margin:0">Toca el botón y elige WhatsApp${r.carta?"; se comparten el acta y la carta de responsabilidad":""}. Envíalo a:</p>
       <div class="recip">${destinatarios(r).map(x=>`<div><span><b>${esc(x.n)}</b><br><span class="small muted">${esc(x.rol)}</span></span><span class="small" style="font-variant-numeric:tabular-nums">${esc(x.w||"sin número")}</span></div>`).join("")}</div>
-      <button class="btn pri" id="share" type="button">Compartir PDF por WhatsApp</button>
-      ${r.subido?`<p class="small muted" style="margin:0">El PDF quedó guardado en la carpeta de Actas de Drive.</p>`:`<p class="err" style="margin:0">El acta se registró, pero el PDF no se subió a Drive (${esc(r.errPdf||"")}). Compártelo desde aquí; Logística puede regenerarlo.</p>`}</div>
+      <button class="btn pri" id="share" type="button">${r.carta?"Compartir acta y carta por WhatsApp":"Compartir PDF por WhatsApp"}</button>
+      <a class="btn sec" href="${pdfUrl(r)}" download="${esc(pdfNombre(r))}">Descargar acta</a>
+      ${r.carta?`<a class="btn sec" href="${cartaUrl(r)}" download="${esc(cartaNombre(r))}">Descargar carta de responsabilidad</a>`:""}
+      ${(S.cat&&S.cat.contactos||[]).length?`<p class="small muted" style="margin:0">El PDF se envía por correo a quienes tienen marcada la casilla ACTAS en Contactos.</p>`:""}
+      ${r.subido?`<p class="small muted" style="margin:0">${r.carta?"El acta y la carta quedaron guardadas":"El PDF quedó guardado"} en la carpeta de Actas de Drive.</p>${r.carta&&!r.subidoCarta?`<p class="err" style="margin:0">La carta no se subió a Drive (${esc(r.errCarta||"")}). Compártela desde aquí.</p>`:""}`:`<p class="err" style="margin:0">El acta se registró, pero el PDF no se subió a Drive (${esc(r.errPdf||"")}). Compártelo desde aquí; Logística puede regenerarlo.</p>`}</div>
     <div class="card"><dl class="kv"><dt>Hallazgos nuevos</dt><dd>${r.nuevos??"—"}</dd><dt>Previos resueltos</dt><dd>${r.resueltos??"—"}</dd><dt>Previos que siguen</dt><dd>${r.vigentes??"—"}</dd></dl></div></div>`;
 }
 function bindDone(){ $("#share").onclick=()=>compartir(S.done); }

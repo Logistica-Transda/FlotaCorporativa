@@ -14,7 +14,7 @@ function allAreas(){ const s=new Set(); (S.cat.empresas||[]).forEach(e=>e.a.forE
 function allEmpresasVeh(){ return [...new Set(S.cat.veh.map(v=>v.e).filter(Boolean).concat((S.cat.empresas||[]).map(e=>e.e)))].sort(); }
 
 /* =========================== inicio supervisor =========================== */
-const SUP_TABS=[["prog","Inspecciones"],["nuevo","Nuevo registro"],["veh","Vehículos"],["serv","Servicios"],["fallas","Fallas"],["km","Km semanal"],["tab","Tableros"],["env","Enviados"]];
+const SUP_TABS=[["prog","Inspecciones"],["nuevo","Nuevo registro"],["veh","Vehículos"],["serv","Servicios"],["fallas","Fallas"],["km","Km semanal"],["tab","Tableros"],["env","Actas"]];
 const CON_TABS=[["res","Resumen"],["tab","Tableros"],["serv","Servicios"],["fallas","Fallas"],["km","Km semanal"],["prog","Inspecciones"],["actas","Actas"],["hall","Hallazgos"]];
 function tabsBar(list,cur,attr){ return `<div class="tabs" role="tablist">${list.map(([k,l])=>{ const n=k==="fallas"?(S.cat.fallas||[]).length:k==="km"?S.cat.alertas:0;
   return `<button type="button" role="tab" data-${attr}="${k}" aria-selected="${cur===k}">${l}${n?` <span class="chip venc" style="margin-left:4px">${n}</span>`:""}</button>`; }).join("")}</div>`; }
@@ -30,8 +30,8 @@ vHome = function(){
   if(S.tab==="fallas") body=vFallas(false);
   if(S.tab==="km") body=vKm(false);
   if(S.tab==="tab") body=vTablero();
-  if(S.tab==="env") body = S.listas.length ? `<div class="card list">${S.listas.map((x,i)=>`<div class="li"><span><b>${esc(x.folio)}</b> · ${esc(x.placa)}<br><span class="small muted">${esc(x.tipo)} · ${esc(x.res)}</span></span>
-      <button class="btn sec sm" data-share="${i}" type="button">Compartir PDF</button></div>`).join("")}</div>` : `<p class="muted">Aún no hay registros enviados en esta sesión.</p>`;
+  if(S.tab==="env") body = (S.listas.length ? `<h2>Enviadas en esta sesión</h2><div class="card list">${S.listas.map((x,i)=>`<div class="li"><span><b>${esc(x.folio)}</b> · ${esc(x.placa)}<br><span class="small muted">${esc(x.tipo)} · ${esc(x.res)}</span></span>
+      <span class="row">${botonesPdf(x,`data-share="${i}"`)}</span></div>`).join("")}</div>` : "") + `<h2>Buscar actas anteriores</h2>` + vActas();
   return `<div class="stack screen">${banner()}
     ${S.draft?`<div class="card row" style="justify-content:space-between"><span>Tienes un registro sin terminar: <b>${esc(S.draft.v?S.draft.v.p:"sin vehículo")}</b> · ${esc(TIPOS[S.draft.tipo].t)}</span><span class="row"><button class="btn sec sm" id="ddel" type="button">Descartar</button><button class="btn pri sm" id="dgo" type="button">Continuar</button></span></div>`:""}
     ${tabsBar(SUP_TABS,S.tab,"tab")}${body}</div>`;
@@ -42,6 +42,7 @@ bindHome = function(){
   $$("[data-insp]").forEach(b=>b.onclick=()=>{ S.f=newFlow("M"); S.view="flow"; pick(b.dataset.insp); });
   const st=$("#start"); if(st) st.onclick=()=>{ S.f=newFlow("M"); S.view="flow"; render(); };
   $$("[data-share]").forEach(b=>b.onclick=()=>compartir(S.listas[Number(b.dataset.share)]));
+  bindActas();
   const dg=$("#dgo"); if(dg) dg.onclick=()=>{ S.f=S.draft; S.draft=null; S.view="flow"; render(); };
   const dd=$("#ddel"); if(dd) dd.onclick=()=>{ S.draft=null; kv.del("borrador"); render(); };
   bindModulos(false);
@@ -64,8 +65,27 @@ vConsulta = function(){
   if(S.ctab==="actas"||S.ctab==="hall"){ const save=S.ctab; body=vConsultaV1(); S.ctab=save; }
   return `<div class="stack screen">${banner()}${tabsBar(CON_TABS,S.ctab,"ctab")}${body}</div>`;
 };
+function vActas(){ const a=S.actas; S.pdfB=S.pdfB||{};
+  return `<form class="card stack" id="factas"><div class="grid2"><label class="f" for="fpl"><span>Placa</span><input id="fpl" type="text" value="${esc(S.actaF.placa)}" placeholder="Todas"></label>
+      <label class="f" for="fde"><span>Desde</span><input id="fde" type="date" value="${S.actaF.desde}"></label></div><button class="btn sec" type="submit">Buscar</button></form>
+    ${a===null?`<p class="muted">Toca Buscar para ver las actas.</p>`:a.length?`<div class="card list">${a.map(x=>{ const b=S.pdfB[x.folio];
+      return `<div class="li"><span><b>${esc(x.folio)}</b> · ${esc(x.placa)} · ${esc(x.fecha)}<br><span class="small muted">${esc(x.tipo)} · ${esc(x.res)} · ${esc(x.cond)} · ${fmt(x.km)} km${x.carta?" · con carta":""}</span></span>
+      <span class="row">${!x.pdf?`<span class="small muted">sin PDF</span>`:b?botonesPdf(b,`data-sharef="${esc(x.folio)}"`)+`<a class="btn sec sm" href="${pdfUrl(b)}" target="_blank" rel="noopener">Abrir</a>`:`<button class="btn sec sm" data-pdf="${esc(x.folio)}" type="button">Preparar PDF${x.carta?"s":""}</button>`}</span></div>`; }).join("")}</div>`:`<p class="muted">No hay actas con ese filtro.</p>`}`;
+}
+function bindActas(){
+  const fa=$("#factas"); if(fa) fa.onsubmit=async e=>{ e.preventDefault(); S.actaF={placa:$("#fpl").value.trim().toUpperCase(),desde:$("#fde").value,hasta:""};
+    try{ const r=await api("actas",S.actaF); S.actas=r.actas; S.msg=null; }catch(err){ S.msg={t:err.message,err:1}; } render(); };
+  $$("[data-pdf]").forEach(b=>b.onclick=async()=>{ b.disabled=true; b.innerHTML='<span class="spinner"></span>';
+    try{ const folio=b.dataset.pdf, x=(S.actas||[]).find(a=>a.folio===folio)||{};
+      const traer=async doc=>{ const r=await api("pdf",{folio,doc}); return new Blob([await (await fetch(r.pdf)).blob()],{type:"application/pdf"}); };
+      const pdf=await traer(""), carta=x.carta?await traer("carta").catch(()=>null):null;
+      S.pdfB=S.pdfB||{}; S.pdfB[folio]={folio, placa:x.placa||"", pdf, carta}; }
+    catch(err){ S.msg={t:err.message,err:1}; } render(); });
+  $$("[data-sharef]").forEach(b=>b.onclick=()=>compartir(S.pdfB[b.dataset.sharef]));
+}
 function vConsultaV1(){ // actas y hallazgos de la v1
-  if(S.ctab==="actas"){ const a=S.actas;
+  if(S.ctab==="actas") return vActas();
+  if(false){ const a=S.actas;
     return `<form class="card stack" id="factas"><div class="grid2"><label class="f" for="fpl"><span>Placa</span><input id="fpl" type="text" value="${esc(S.actaF.placa)}" placeholder="Todas"></label>
       <label class="f" for="fde"><span>Desde</span><input id="fde" type="date" value="${S.actaF.desde}"></label></div><button class="btn sec" type="submit">Buscar</button></form>
       ${a===null?`<p class="muted">Toca Buscar para ver las actas.</p>`:a.length?`<div class="card list">${a.map(x=>`<div class="li"><span><b>${esc(x.folio)}</b> · ${esc(x.placa)} · ${esc(x.fecha)}<br>
@@ -79,11 +99,7 @@ bindConsulta = function(){
   bindBanner();
   $$("[data-ctab]").forEach(b=>b.onclick=()=>{ S.ctab=b.dataset.ctab; S.msg=null; render(); loadTab(); window.scrollTo({top:0}); });
   $$("[data-hf]").forEach(b=>b.onclick=()=>{ S.hallF=b.dataset.hf; render(); });
-  const fa=$("#factas"); if(fa) fa.onsubmit=async e=>{ e.preventDefault(); S.actaF={placa:$("#fpl").value.trim(),desde:$("#fde").value,hasta:""};
-    try{ const r=await api("actas",S.actaF); S.actas=r.actas; S.msg=null; }catch(err){ S.msg={t:err.message,err:1}; } render(); };
-  $$("[data-pdf]").forEach(b=>b.onclick=async()=>{ b.disabled=true; b.innerHTML='<span class="spinner"></span>';
-    try{ const r=await api("pdf",{folio:b.dataset.pdf}); const blob=await (await fetch(r.pdf)).blob(); S.pdfLinks[b.dataset.pdf]=URL.createObjectURL(blob); }
-    catch(err){ S.msg={t:err.message,err:1}; } render(); });
+  bindActas();
   bindModulos(true);
 };
 function curTab(){ return S.sess.rol==="consulta"?S.ctab:S.tab; }
@@ -123,7 +139,7 @@ function vVehiculos(){
       <span class="sub">${esc(v.ar||"Área por asignar")} · ${esc(v.re||"sin responsable")}${v.pa?" ("+esc(v.pa)+")":""} · ${esc(v.st)}${p.length?` · <span class="warn-txt">por confirmar: ${p.join(", ")}</span>`:""}</span></button>`; }).join("")||`<p class="muted">Sin resultados.</p>`}</div></div>`;
 }
 function vehForm(v){
-  return { nuevo:!v, PLACA:v?v.p:"", PLACA_ACTUAL:v?v.p:"", EMPRESA:v?v.e:"", TIPO:v?v.t:"", CLASE:v?v.c:"Liviano", MARCA:v?v.m:"", LINEA:v?v.l:"", ANIO:v?v.a:"", VIN:v?v.vin:"",
+  return { nuevo:!v, PLACA:v?v.p:"", PLACA_ACTUAL:v?v.p:"", EMPRESA:v?v.e:"", TIPO:v?v.t:"", CLASE:v?v.c:"Liviano", MARCA:v?v.m:"", LINEA:v?v.l:"", ANIO:v?v.a:"", COLOR:v?(v.co||""):"", VIN:v?v.vin:"",
     KM_ACTUAL:"", AREA:v?v.ar:"", RESPONSABLE:v?v.re:"", PILOTO_ASIGNADO:v?v.pa:"", TEL_PILOTO:v?v.tel:"", ASIGNACION:v?v.as:"Por definir", UBICACION:v?(v.u==="Por asignar"?"":v.u):"",
     CONTROL_KM:v?(v.ck?"Sí":"No"):"Sí", COMBUSTIBLE:v?v.cb:"", MANTENIMIENTO:v?v.mt:"", AGENCIA_HASTA_KM:v&&v.ah!=null?v.ah:"", INTERVALO_KM:v?v.iv:(S.cat.intervalo||5000),
     PROX_SERV_KM:v&&v.px!=null?v.px:"", SEGURO:v?v.sg:"", ASEGURADORA:v?v.sga:"", POLIZA:v?v.sgp:"", SEGURO_VENCE:v?v.sgv:"", GPS:v?v.gps:"", GPS_PROVEEDOR:v?v.gpp:"",
@@ -142,7 +158,7 @@ function vVehForm(){
      ${fld("vEMPRESA","Empresa (propietaria / póliza)",sel("vEMPRESA",allEmpresasVeh(),f.EMPRESA,"Elegir"),true)}
      ${fld("vTIPO","Tipo",sel("vTIPO",TIPOS_VEH,f.TIPO,"Elegir"),true)}${fld("vCLASE","Clase",sel("vCLASE",["Liviano","Camión","Pesado (validar alcance)"],f.CLASE))}
      ${fld("vMARCA","Marca",inp("vMARCA",f.MARCA),true)}${fld("vLINEA","Línea / modelo",inp("vLINEA",f.LINEA))}
-     ${fld("vANIO","Año",inp("vANIO",f.ANIO,"number","inputmode=numeric"))}${fld("vVIN","VIN / chasis",inp("vVIN",f.VIN))}
+     ${fld("vANIO","Año",inp("vANIO",f.ANIO,"number","inputmode=numeric"))}${fld("vCOLOR","Color",inp("vCOLOR",f.COLOR,"text",'placeholder="Ej. Blanco"'))}${fld("vVIN","VIN / chasis",inp("vVIN",f.VIN))}
      ${f.nuevo?fld("vKM_ACTUAL","Kilometraje inicial",inp("vKM_ACTUAL",f.KM_ACTUAL,"number","inputmode=numeric"),true):""}</div>
      <div class="row" style="align-items:flex-start;gap:12px"><label class="ph ${f.nuevo?"req":""}" style="width:170px;flex:none">${f.tarjeta?`<img src="${f.tarjeta}" alt="Tarjeta de circulación">`:""}
        <input type="file" accept="image/*" capture="environment" id="vtar" aria-label="Foto de la tarjeta de circulación"><span class="lbl">Tarjeta de circulación${f.nuevo?" *":""}${f.tarjeta?" ✓":f.tc?" (ya cargada)":""}</span></label>
@@ -151,7 +167,7 @@ function vVehForm(){
    <section class="card stack"><div class="sec-h">Asignación</div><div class="fgrid">
      ${fld("vAREA","Área",sel("vAREA",allAreas(),f.AREA,"Por asignar"))}${fld("vUBICACION","Ubicación base",inp("vUBICACION",f.UBICACION,"text",'placeholder="Ej. Santa Mónica"'))}
      ${fld("vRESPONSABLE","Responsable",inp("vRESPONSABLE",f.RESPONSABLE,"text",'list="dlresp2"'))}${fld("vPILOTO_ASIGNADO","Piloto asignado (si es distinto)",inp("vPILOTO_ASIGNADO",f.PILOTO_ASIGNADO,"text",'list="dlresp2"'))}
-     ${fld("vTEL_PILOTO","Teléfono del piloto",inp("vTEL_PILOTO",f.TEL_PILOTO,"tel"))}${fld("vASIGNACION","Asignación",sel("vASIGNACION",["Fija","Pool (por solicitud)","Por definir"],f.ASIGNACION))}</div>
+     ${fld("vTEL_PILOTO","Teléfono del piloto",inp("vTEL_PILOTO",f.TEL_PILOTO,"tel"))}${fld("vASIGNACION","Asignación",sel("vASIGNACION",["Fija","Temporal","Pool (por solicitud)","Por definir"],f.ASIGNACION))}</div>
      <datalist id="dlresp2">${(S.cat.resp||[]).map(r=>`<option value="${esc(r.n)}">`).join("")}</datalist></section>
    <section class="card stack"><div class="sec-h">Mantenimiento y control de km</div><div class="fgrid">
      ${fld("vCOMBUSTIBLE",`Combustible ${f.cbo?'<span class="chip ok">confirmado</span>':'<span class="chip sem">por confirmar</span>'}`,sel("vCOMBUSTIBLE",["Gasolina","Diésel"],f.COMBUSTIBLE,"Elegir"),true)}
@@ -168,7 +184,7 @@ function vVehForm(){
    ${!f.nuevo?`<section class="card stack"><div class="sec-h">Baja del vehículo</div><p class="small muted" style="margin:0">Queda inactivo con todo su historial y sale de la programación y de los reportes.</p>
      <button class="btn sec" id="vbaja" type="button" style="color:var(--bad)">Dar de baja este vehículo</button></section>`:""}</div>`;
 }
-const VFIELDS=["PLACA","EMPRESA","TIPO","CLASE","MARCA","LINEA","ANIO","VIN","KM_ACTUAL","AREA","UBICACION","RESPONSABLE","PILOTO_ASIGNADO","TEL_PILOTO","ASIGNACION","COMBUSTIBLE","MANTENIMIENTO","AGENCIA_HASTA_KM","CONTROL_KM","INTERVALO_KM","PROX_SERV_KM","ASEGURADORA","POLIZA","SEGURO_VENCE","GPS_PROVEEDOR","NOTAS"];
+const VFIELDS=["PLACA","EMPRESA","TIPO","CLASE","MARCA","LINEA","ANIO","COLOR","VIN","KM_ACTUAL","AREA","UBICACION","RESPONSABLE","PILOTO_ASIGNADO","TEL_PILOTO","ASIGNACION","COMBUSTIBLE","MANTENIMIENTO","AGENCIA_HASTA_KM","CONTROL_KM","INTERVALO_KM","PROX_SERV_KM","ASEGURADORA","POLIZA","SEGURO_VENCE","GPS_PROVEEDOR","NOTAS"];
 function readVehForm(){ const f=S.vedit; VFIELDS.forEach(k=>{ const el=$("#v"+k); if(el) f[k]=el.value; }); }
 function bVehiculos(){
   if(S.vbaja) return bBaja();
